@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mygw"
+version = "0.0.1"
+authors = [
+  { name="Tomás Cabrera", email="tcabrera@andrew.cmu.edu" },
+]
+description = "A collection of my utilities for analyzing GW events"
+readme = "README.md"
+requires-python = ">=3.8,<3.12"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "ligo.skymap",
+    "matplotlib",
+    "astropy",
+    "numpy",
+    "pytest",
+]
+
+[project.urls]
+Homepage = "https://github.com/tomas-cabrera/mygw"
+Issues = "https://github.com/tomas-cabrera/mygw/issues"
