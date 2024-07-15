@@ -10,5 +10,8 @@
 # distribution
 /dist/
 
+# build
+/build/
+
 # test plots
 tests/figures/*
