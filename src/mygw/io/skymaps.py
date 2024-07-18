@@ -1,6 +1,7 @@
 import glob
 import os
 import os.path as pa
+import shutil
 
 import astropy.units as u
 import astropy_healpix as ah
@@ -10,6 +11,7 @@ import numpy as np
 import requests
 from astropy.cosmology import FlatLambdaCDM
 from ligo.skymap.io.fits import read_sky_map
+import ligo.skymap.moc as lsm_moc
 
 from mygw.io import paths
 
@@ -34,6 +36,15 @@ class GWTCCache:
             self.make_gwtc_cache()
 
     def make_gwtc_cache(self, overwrite=False):
+        """Generate cache for GWTC skymaps.
+        Does this by downloading from the initialized URLs.
+        This should include skymaps for all events in LVK O1-3.
+
+        Parameters
+        ----------
+        overwrite : bool, optional
+            _description_, by default False
+        """
         for gwtc, url in self.gwtc2url.items():
             # Generate path
             tar_path = pa.join(self.cache_dir, pa.basename(url))
@@ -63,6 +74,10 @@ class GWTCCache:
                     intermediate_dir = glob.glob(f"{dir_path}/*")[0]
                     os.system(f"mv {intermediate_dir}/* {dir_path}")
                     os.rmdir(intermediate_dir)
+
+    def clear_cache(self):
+        """Clears the cache."""
+        shutil.rmtree(self.cache_dir)
 
     def get_skymap_path_for_eventid(
         self,
@@ -182,21 +197,21 @@ class Skymap:
 
             return ipix
 
-    def get_hpx_inds(self, id_hpx):
+    def get_hpx_inds(self, hpx):
         # MOC skymaps: find index of UNIQ
         if self.moc:
-            ind_hpx = [np.where(self.skymap["UNIQ"] == id)[0] for id in id_hpx]
+            ind_hpx = [np.where(self.skymap["UNIQ"] == id)[0] for id in hpx]
             return np.array(ind_hpx).flatten()
-        # Flat skymaps: assume id_hpx is the index
+        # Flat skymaps: assume hpx is the index
         else:
-            return id_hpx
+            return hpx
 
-    def dp_dOmega(self, id_hpx):
+    def dp_dOmega(self, hpx=None):
         """Returns probabilty density over solid angle for the given HEALPixs.
 
         Parameters
         ----------
-        id_hpx : _type_
+        hpx : _type_
             _description_
 
         Returns
@@ -204,8 +219,11 @@ class Skymap:
         _type_
             _description_
         """
-        # Get indices
-        ind_hpx = self.get_hpx_inds(id_hpx)
+        # Get indices; get all indices if None
+        if hpx is None:
+            ind_hpx = np.arange(len(self.skymap))
+        else:
+            ind_hpx = self.get_hpx_inds(hpx)
 
         # Fetch HEALPix indices probdensity
         if self.moc:
@@ -232,14 +250,14 @@ class Skymap:
 
         return ddL_dz_jacobian.to(u.Mpc)
 
-    def dp_ddL(self, dL, id_hpx):
+    def dp_ddL(self, dL, hpx):
         """_summary_
 
         Parameters
         ----------
         dL : _type_
             _description_
-        id_hpx : _type_
+        hpx : _type_
             _description_
 
         Returns
@@ -248,7 +266,7 @@ class Skymap:
             _description_
         """
         # Select hpx
-        skymap_temp = self.skymap[id_hpx]
+        skymap_temp = self.skymap[hpx]
 
         # Calculate dp_ddL
         dp_ddL = lsm_dist.conditional_pdf(
@@ -263,7 +281,7 @@ class Skymap:
     def dp_dz(
         self,
         z,
-        id_hpx,
+        hpx,
         cosmo=None,
     ):
         """Returns the probability density over redshift, over the domain of the skymap.
@@ -286,7 +304,7 @@ class Skymap:
         # Calculate dp_ddL
         dp_ddL = self.dp_ddL(
             cosmo.luminosity_distance(z),
-            id_hpx,
+            hpx,
         )
 
         # Convert to dp_dz
@@ -297,7 +315,7 @@ class Skymap:
     def dp_dz_grid(
         self,
         z_grid,
-        id_hpx,
+        hpx,
         z_evaluate=None,
         cosmo=None,
     ):
@@ -325,12 +343,67 @@ class Skymap:
         cosmo = self.get_cosmo(cosmo)
 
         # Calculate dp_dz over z_evaluate
-        dp_dz_evaluate = self.dp_dz(z_evaluate, id_hpx, cosmo=cosmo)
+        dp_dz_evaluate = self.dp_dz(z_evaluate, hpx, cosmo=cosmo)
 
         # Calculate dp_dz over z_grid
-        dp_dz_grid = self.dp_dz(z_grid, id_hpx, cosmo=cosmo)
+        dp_dz_grid = self.dp_dz(z_grid, hpx, cosmo=cosmo)
 
         # Normalize dp_dz_evalute
         dp_dz_evaluate /= dp_dz_grid.sum()
 
         return dp_dz_evaluate
+
+    def get_hpxs_for_ci_areas(self, ci_areas):
+        # Preprocess so that ci_areas is an array
+        ci_areas = np.array([ci_areas]).flatten()
+
+        # Get hpx probabilty array
+        if self.moc:
+            hpxs = self.skymap["UNIQ"]
+            probs = (
+                self.skymap["PROBDENSITY"]
+                * lsm_moc.uniq2pixarea(self.skymap["UNIQ"])
+                * u.sr
+            )
+            prob_densities = self.dp_dOmega()
+        else:
+            hpxs = np.arange(len(self.skymap))
+            probs = self.skymap["PROB"]
+            prob_densities = self.dp_dOmega()
+
+        # Sort by probdensity
+        sort_inds = np.argsort(prob_densities)[::-1]
+
+        # Cumulative sum
+        cumsum_probs = np.cumsum(probs[sort_inds])
+
+        # Get cutoff
+        ind_ci_cutoffs = np.searchsorted(cumsum_probs, ci_areas)
+
+        # Get hpxs
+        hpx_cis = [hpxs[sort_inds[:i]] for i in ind_ci_cutoffs]
+
+        return hpx_cis
+
+    def draw_random_location(
+        self,
+        z_grid,
+        ci_area=None,
+        ci_volume=None,
+        rng_np=np.random.default_rng(12345),
+    ):
+        if ci_area is not None and ci_volume is not None:
+            raise ValueError("Only one of ci_area or ci_volume should be specified")
+        elif ci_area is not None:
+
+            # Get hpxs for area
+            hpx_cis = self.get_hpxs_for_ci_areas(ci_area)
+
+            # Randomly select hpx, convert to ra, dec
+            hpx = rng_np.choice(hpx_cis, p=self.dp_dOmega(hpx=hpx_cis))
+            ra, dec = hp.pix2ang(self.nside, hpx, lonlat=True, nest=self.nest) * u.deg
+
+            # Randomly select redshift
+            z = rng_np.choice(z_grid, p=self.dp_dz_grid(z_grid, hpx=hpx))
+
+        return ra, dec, z

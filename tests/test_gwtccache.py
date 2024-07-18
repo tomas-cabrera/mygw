@@ -23,4 +23,4 @@ def test_gwtccache():
         assert os.path.exists(path)
 
     # Remove temp cache
-    shutil.rmtree(cache_dir)
+    cache.clear_cache()
