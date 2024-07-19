@@ -126,7 +126,7 @@ class Skymap:
         self,
         filename,
         nest=False,
-        distances=False,
+        distances=True,
         moc=False,
         cosmo=FlatLambdaCDM(H0=70, Om0=0.3),
     ):
@@ -147,6 +147,33 @@ class Skymap:
         # If flat skymap, set nside
         if not moc:
             self.nside = hp.get_nside(self.skymap)
+
+    def flatten(self, level):
+        """Flatten the skymap to a given level."""
+        # Make copy
+        skymap_temp = self.skymap.copy()
+
+        # If already flat
+        if not self.moc:
+            # If already at level, return self
+            if self.nside == hp.order2nside(level):
+                return self
+            # If not, define UNIQ column
+            # BUG: This doesn't handle RING-ordered maps
+            skymap_temp.skymap["UNIQ"] = ah.level_ipix_to_uniq(
+                level, np.arange(len(self.skymap))
+            )
+
+        # Flatten the skymap
+        skymap_temp.skymap = lsm_moc.rasterize(skymap_temp, order=level)
+        skymap_temp["PROB"] = skymap_temp["PROBDENSITY"] * lsm_moc.uniq2pixarea(
+            skymap_temp["UNIQ"]
+        )
+
+        # Update nside
+        skymap_temp.nside = hp.get_nside(skymap_temp.skymap)
+
+        return skymap_temp
 
     def get_cosmo(self, cosmo):
         """Returns default cosmo if None, else returns input."""
@@ -197,14 +224,14 @@ class Skymap:
 
             return ipix
 
-    def get_hpx_inds(self, hpx):
+    def get_hpx_inds(self, hpxs):
         # MOC skymaps: find index of UNIQ
         if self.moc:
-            ind_hpx = [np.where(self.skymap["UNIQ"] == id)[0] for id in hpx]
+            ind_hpx = [np.where(self.skymap["UNIQ"] == id)[0] for id in hpxs]
             return np.array(ind_hpx).flatten()
         # Flat skymaps: assume hpx is the index
         else:
-            return hpx
+            return hpxs
 
     def dp_dOmega(self, hpx=None):
         """Returns probabilty density over solid angle for the given HEALPixs.
@@ -406,4 +433,4 @@ class Skymap:
             # Randomly select redshift
             z = rng_np.choice(z_grid, p=self.dp_dz_grid(z_grid, hpx=hpx))
 
-        return ra, dec, z
+        return [ra, dec, z]
