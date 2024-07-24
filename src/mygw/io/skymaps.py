@@ -3,12 +3,14 @@ import os
 import os.path as pa
 import shutil
 
+from astropy.constants import c
 import astropy.units as u
 import astropy_healpix as ah
 import healpy as hp
 import ligo.skymap.distance as lsm_dist
 import numpy as np
 import requests
+from astropy.table import QTable
 from astropy.cosmology import FlatLambdaCDM
 from ligo.skymap.io.fits import read_sky_map
 import ligo.skymap.moc as lsm_moc
@@ -135,6 +137,7 @@ class Skymap:
         self.nest = nest
         self.distances = distances
         self.moc = moc
+        self.cosmo = cosmo
 
         # Read skymap
         self.skymap = read_sky_map(
@@ -165,13 +168,17 @@ class Skymap:
             )
 
         # Flatten the skymap
-        skymap_temp.skymap = lsm_moc.rasterize(skymap_temp, order=level)
-        skymap_temp["PROB"] = skymap_temp["PROBDENSITY"] * lsm_moc.uniq2pixarea(
-            skymap_temp["UNIQ"]
-        )
+        skymap_temp.skymap = QTable(lsm_moc.rasterize(skymap_temp.skymap, order=level))
 
-        # Update nside
-        skymap_temp.nside = hp.get_nside(skymap_temp.skymap)
+        # Update moc, nside
+        skymap_temp.moc = False
+        skymap_temp.nside = hp.npix2nside(len(skymap_temp.skymap))
+
+        # Add PROB column
+        print(type(skymap_temp.skymap))
+        skymap_temp.skymap["PROB"] = skymap_temp.skymap[
+            "PROBDENSITY"
+        ] * hp.nside2pixarea(skymap_temp.nside)
 
         return skymap_temp
 
@@ -225,6 +232,9 @@ class Skymap:
             return ipix
 
     def get_hpx_inds(self, hpxs):
+        # Cast as array
+        hpxs = np.array([hpxs]).flatten()
+
         # MOC skymaps: find index of UNIQ
         if self.moc:
             ind_hpx = [np.where(self.skymap["UNIQ"] == id)[0] for id in hpxs]
@@ -273,7 +283,7 @@ class Skymap:
         cosmo = self.get_cosmo(cosmo)
 
         # Calculate jacobian
-        ddL_dz_jacobian = cosmo.comoving_distance(z) + (1 + z) * u.c / cosmo.H(z)
+        ddL_dz_jacobian = cosmo.comoving_distance(z) + (1 + z) * c / cosmo.H(z)
 
         return ddL_dz_jacobian.to(u.Mpc)
 
@@ -293,14 +303,17 @@ class Skymap:
             _description_
         """
         # Select hpx
-        skymap_temp = self.skymap[hpx]
+        skymap_temp = self.skymap[self.get_hpx_inds(hpx)]
 
         # Calculate dp_ddL
-        dp_ddL = lsm_dist.conditional_pdf(
-            dL,
-            skymap_temp["DISTMU"],
-            skymap_temp["DISTSIGMA"],
-            skymap_temp["DISTNORM"],
+        dp_ddL = (
+            lsm_dist.conditional_pdf(
+                dL.to(u.Mpc).value,
+                skymap_temp["DISTMU"],
+                skymap_temp["DISTSIGMA"],
+                skymap_temp["DISTNORM"],
+            )
+            / u.Mpc
         )
 
         return dp_ddL
@@ -376,6 +389,12 @@ class Skymap:
         dp_dz_grid = self.dp_dz(z_grid, hpx, cosmo=cosmo)
 
         # Normalize dp_dz_evalute
+        if dp_dz_grid.sum() == 0:
+            print(
+                "WARNING: dp_dz_grid probabilities summed to 0; returning uniform probabilites"
+            )
+            dp_dz_grid = np.ones_like(dp_dz_grid)
+            dp_dz_evaluate = np.ones_like(dp_dz_evaluate)
         dp_dz_evaluate /= dp_dz_grid.sum()
 
         return dp_dz_evaluate
@@ -412,6 +431,16 @@ class Skymap:
 
         return hpx_cis
 
+    def _pix2radec(self, hpx):
+        if self.moc:
+            _level, _ipix = ah.uniq_to_level_ipix(hpx)
+            _nside = hp.order2nside(_level)
+        else:
+            _ipix = hpx
+            _nside = self.nside
+
+        return hp.pix2ang(_nside, _ipix, lonlat=True, nest=self.nest) * u.deg
+
     def draw_random_location(
         self,
         z_grid,
@@ -424,11 +453,14 @@ class Skymap:
         elif ci_area is not None:
 
             # Get hpxs for area
-            hpx_cis = self.get_hpxs_for_ci_areas(ci_area)
+            hpx_cis = self.get_hpxs_for_ci_areas(ci_area)[0]
 
-            # Randomly select hpx, convert to ra, dec
-            hpx = rng_np.choice(hpx_cis, p=self.dp_dOmega(hpx=hpx_cis))
-            ra, dec = hp.pix2ang(self.nside, hpx, lonlat=True, nest=self.nest) * u.deg
+            # Randomly select hpx
+            dp_dOmega = self.dp_dOmega(hpx=hpx_cis)
+            hpx = rng_np.choice(hpx_cis, p=dp_dOmega / dp_dOmega.sum())
+
+            # Convert hpx to ra, dec
+            ra, dec = self._pix2radec(hpx)
 
             # Randomly select redshift
             z = rng_np.choice(z_grid, p=self.dp_dz_grid(z_grid, hpx=hpx))
