@@ -2,18 +2,19 @@ import glob
 import os
 import os.path as pa
 import shutil
+from copy import copy
 
-from astropy.constants import c
 import astropy.units as u
 import astropy_healpix as ah
 import healpy as hp
 import ligo.skymap.distance as lsm_dist
+import ligo.skymap.moc as lsm_moc
 import numpy as np
 import requests
-from astropy.table import QTable
+from astropy.constants import c
 from astropy.cosmology import FlatLambdaCDM
+from astropy.table import QTable
 from ligo.skymap.io.fits import read_sky_map
-import ligo.skymap.moc as lsm_moc
 
 from mygw.io import paths
 
@@ -154,7 +155,7 @@ class Skymap:
     def flatten(self, level):
         """Flatten the skymap to a given level."""
         # Make copy
-        skymap_temp = self.skymap.copy()
+        skymap_temp = copy(self)
 
         # If already flat
         if not self.moc:
@@ -169,13 +170,13 @@ class Skymap:
 
         # Flatten the skymap
         skymap_temp.skymap = QTable(lsm_moc.rasterize(skymap_temp.skymap, order=level))
+        skymap_temp.skymap.meta = self.skymap.meta
 
         # Update moc, nside
         skymap_temp.moc = False
         skymap_temp.nside = hp.npix2nside(len(skymap_temp.skymap))
 
         # Add PROB column
-        print(type(skymap_temp.skymap))
         skymap_temp.skymap["PROB"] = skymap_temp.skymap[
             "PROBDENSITY"
         ] * hp.nside2pixarea(skymap_temp.nside)
@@ -194,10 +195,10 @@ class Skymap:
         if self.moc:
             # If moc_level_max is None, set to max level in skymap
             if moc_level_max is None:
-                moc_level_max = hp.uniq_to_level_ipix(np.max(self.skymap["UNIQ"]))[0]
+                moc_level_max = ah.uniq_to_level_ipix(np.max(self.skymap["UNIQ"]))[0]
 
             # Initialize levels
-            levels = np.arange(moc_level_max)
+            levels = np.arange(moc_level_max + 1)
 
             # Get uniqs for nsides, skycoord
             uniqs = ah.level_ipix_to_uniq(
@@ -212,7 +213,7 @@ class Skymap:
             )
 
             # Select first uniq that is in the skymap
-            mask = np.isin(uniqs, self.skymap["UNIQ"])
+            mask = np.isin(self.skymap["UNIQ"], uniqs)
             if mask.any():
                 return self.skymap["UNIQ"][mask][0]
             else:
