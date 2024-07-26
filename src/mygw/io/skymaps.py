@@ -128,7 +128,7 @@ class Skymap:
     def __init__(
         self,
         filename,
-        nest=False,
+        nest=True,
         distances=True,
         moc=False,
         cosmo=FlatLambdaCDM(H0=70, Om0=0.3),
@@ -139,6 +139,10 @@ class Skymap:
         self.distances = distances
         self.moc = moc
         self.cosmo = cosmo
+
+        # Check if MOC and nest
+        if self.moc and not self.nest:
+            raise ValueError("MOC skymaps must be nested")
 
         # Read skymap
         self.skymap = read_sky_map(
@@ -199,35 +203,35 @@ class Skymap:
 
             # Initialize levels
             levels = np.arange(moc_level_max + 1)
+            nsides = [hp.order2nside(l) for l in levels]
 
             # Get uniqs for nsides, skycoord
+            ipix = ah.lonlat_to_healpix(
+                skycoord.ra,
+                skycoord.dec,
+                nsides,
+                order=("nested" if self.nest else "ring"),
+            )
             uniqs = ah.level_ipix_to_uniq(
                 levels,
-                hp.ang2pix(
-                    [hp.order2nside(l) for l in levels],
-                    skycoord.ra.deg,
-                    skycoord.dec.deg,
-                    lonlat=True,
-                    nest=self.nest,
-                ),
+                ipix,
             )
 
             # Select first uniq that is in the skymap
-            mask = np.isin(self.skymap["UNIQ"], uniqs)
-            if mask.any():
-                return self.skymap["UNIQ"][mask][0]
+            mask = np.isin(uniqs, self.skymap["UNIQ"])
+            if np.any(mask):
+                return uniqs[mask][0]
             else:
                 raise ValueError(f"Skycoord {skycoord} not found in skymap")
 
         # If flat skymap, convert skycoord to ipix using self.nsides
         else:
             # Calculate ipix
-            ipix = hp.ang2pix(
+            ipix = ah.lonlat_to_healpix(
+                skycoord.ra,
+                skycoord.dec,
                 self.nside,
-                skycoord.ra.deg,
-                skycoord.dec.deg,
-                lonlat=True,
-                nest=self.nest,
+                order=("nested" if self.nest else "ring"),
             )
 
             return ipix
@@ -265,9 +269,9 @@ class Skymap:
 
         # Fetch HEALPix indices probdensity
         if self.moc:
-            dp_dOmega = self.skymap[ind_hpx]["PROBDENSITY"] / u.sr
+            dp_dOmega = self.skymap[ind_hpx]["PROBDENSITY"].value / u.sr
         else:
-            dp_dOmega = self.skymap[ind_hpx]["PROB"] / (
+            dp_dOmega = self.skymap[ind_hpx]["PROB"].value / (
                 hp.nside2pixarea(self.nside) * u.sr
             )
 
@@ -310,9 +314,9 @@ class Skymap:
         dp_ddL = (
             lsm_dist.conditional_pdf(
                 dL.to(u.Mpc).value,
-                skymap_temp["DISTMU"],
-                skymap_temp["DISTSIGMA"],
-                skymap_temp["DISTNORM"],
+                skymap_temp["DISTMU"].value,
+                skymap_temp["DISTSIGMA"].value,
+                skymap_temp["DISTNORM"].value,
             )
             / u.Mpc
         )
@@ -432,7 +436,7 @@ class Skymap:
 
         return hpx_cis
 
-    def _pix2radec(self, hpx):
+    def _pix2radec(self, hpx, dx=None, dy=None):
         if self.moc:
             _level, _ipix = ah.uniq_to_level_ipix(hpx)
             _nside = hp.order2nside(_level)
@@ -440,7 +444,13 @@ class Skymap:
             _ipix = hpx
             _nside = self.nside
 
-        return hp.pix2ang(_nside, _ipix, lonlat=True, nest=self.nest) * u.deg
+        return ah.healpix_to_lonlat(
+            _ipix,
+            _nside,
+            order=("nested" if self.nest else "ring"),
+            dx=dx,
+            dy=dy,
+        )
 
     def draw_random_location(
         self,
@@ -461,7 +471,8 @@ class Skymap:
             hpx = rng_np.choice(hpx_cis, p=dp_dOmega / dp_dOmega.sum())
 
             # Convert hpx to ra, dec
-            ra, dec = self._pix2radec(hpx)
+            dx, dy = rng_np.uniform(0, 1, size=2)
+            ra, dec = self._pix2radec(hpx, dx=dx, dy=dy)
 
             # Randomly select redshift
             z = rng_np.choice(z_grid, p=self.dp_dz_grid(z_grid, hpx=hpx))
