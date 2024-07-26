@@ -1,4 +1,5 @@
 import glob
+import math
 import os
 import os.path as pa
 import shutil
@@ -292,6 +293,46 @@ class Skymap:
 
         return ddL_dz_jacobian.to(u.Mpc)
 
+    def _calc_distnorm(self, m, s, n):
+        """Analytic from of the integral of the conditional pdf from 0 to infinity.
+
+        Parameters
+        ----------
+        m : _type_
+            DISTMU
+        s : _type_
+            DISTSIGMA
+        n : _type_
+            DISTNORM
+
+        Returns
+        -------
+        _type_
+            _description_
+        """
+
+        _distnorm = (
+            (
+                (m * s**2 * math.exp(-0.5 * (m / s) ** 2))
+                + (
+                    (math.pi / 2) ** 0.5
+                    * s
+                    * (m**2 + s**2)
+                    * (1 + math.erf(0.5**0.5 * m / s))
+                )
+            )
+            / (2 * math.pi * s**2) ** 0.5
+        ) ** -1
+
+        # Check if negative
+        if _distnorm < 0:
+            print(
+                f"WARNING: _calc_distnorm < 0 (DISTMU={m}, DISTSIGMA={s}); returning original DISTNORM={n}"
+            )
+            _distnorm = n
+
+        return _distnorm
+
     def dp_ddL(self, dL, hpx):
         """_summary_
 
@@ -320,6 +361,14 @@ class Skymap:
             )
             / u.Mpc
         )
+
+        # Recalculate DISTNORM
+        _distnorm = self._calc_distnorm(
+            skymap_temp["DISTMU"].value,
+            skymap_temp["DISTSIGMA"].value,
+            skymap_temp["DISTNORM"].value,
+        )
+        dp_ddL *= _distnorm / skymap_temp["DISTNORM"].value
 
         return dp_ddL
 
@@ -394,9 +443,10 @@ class Skymap:
         dp_dz_grid = self.dp_dz(z_grid, hpx, cosmo=cosmo)
 
         # Normalize dp_dz_evalute
-        if dp_dz_grid.sum() == 0:
+        if dp_dz_grid.sum() == 0 and not np.all(z_grid == 0):
+            skymap_temp = self.skymap[self.get_hpx_inds(hpx)]
             print(
-                "WARNING: dp_dz_grid probabilities summed to 0; returning uniform probabilites"
+                "WARNING: dp_dz_grid probabilities summed to 0; returning uniform probabilites",
             )
             dp_dz_grid = np.ones_like(dp_dz_grid)
             dp_dz_evaluate = np.ones_like(dp_dz_evaluate)
