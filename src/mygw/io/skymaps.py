@@ -331,6 +331,13 @@ class Skymap:
             )
             _distnorm = n
 
+        # Check if nan
+        if np.isnan(_distnorm):
+            print(
+                f"WARNING: _calc_distnorm is NaN; (DISTMU={m}, DISTSIGMA={s}); returning original DISTNORM={n}"
+            )
+            _distnorm = n
+
         return _distnorm
 
     def dp_ddL(self, dL, hpx):
@@ -350,6 +357,27 @@ class Skymap:
         """
         # Select hpx
         skymap_temp = self.skymap[self.get_hpx_inds(hpx)]
+
+        # From https://iopscience.iop.org/article/10.3847/0067-0049/226/1/10:
+        # """In pixels on the sky that contain very little probability,
+        # sometimes the conditional distance distribution cannot be represented using the ansatz.
+        # This is signaled by DISTMU = , DISTSIGMA = 1, and DISTNORM = 0."""
+        # Currently we handle this by returning dp_ddL for the most probable hpx
+        if (
+            not np.isfinite(skymap_temp["DISTMU"])
+            and skymap_temp["DISTSIGMA"] == 1
+            and skymap_temp["DISTNORM"] == 0
+        ):
+            print(
+                "WARNING: Distance ansatz failed as described in S2 of the 'Going the Distance' supplement paper",
+                f"(DISTMU={skymap_temp['DISTMU'].value}, DISTSIGMA={skymap_temp['DISTSIGMA'].value}, DISTNORM={skymap_temp['DISTNORM'].value})",
+                "returning value for the most probable hpx.",
+            )
+            if self.moc:
+                probkey = "PROBDENSITY"
+            else:
+                probkey = "PROB"
+            skymap_temp = self.skymap[[np.argmax(self.skymap[probkey])]]
 
         # Calculate dp_ddL
         dp_ddL = (
@@ -443,14 +471,15 @@ class Skymap:
         dp_dz_grid = self.dp_dz(z_grid, hpx, cosmo=cosmo)
 
         # Normalize dp_dz_evalute
-        if dp_dz_grid.sum() == 0 and not np.all(z_grid == 0):
+        total_prob_grid = np.trapz(dp_dz_grid, z_grid)
+        if total_prob_grid == 0 and not np.all(z_grid == 0):
             skymap_temp = self.skymap[self.get_hpx_inds(hpx)]
             print(
                 "WARNING: dp_dz_grid probabilities summed to 0; returning uniform probabilites",
             )
             dp_dz_grid = np.ones_like(dp_dz_grid)
             dp_dz_evaluate = np.ones_like(dp_dz_evaluate)
-        dp_dz_evaluate /= dp_dz_grid.sum()
+        dp_dz_evaluate /= total_prob_grid
 
         return dp_dz_evaluate
 
@@ -507,7 +536,7 @@ class Skymap:
         z_grid,
         ci_area=None,
         ci_volume=None,
-        rng_np=np.random.default_rng(12345),
+        rng=np.random.default_rng(12345),
     ):
         if ci_area is not None and ci_volume is not None:
             raise ValueError("Only one of ci_area or ci_volume should be specified")
@@ -518,13 +547,14 @@ class Skymap:
 
             # Randomly select hpx
             dp_dOmega = self.dp_dOmega(hpx=hpx_cis)
-            hpx = rng_np.choice(hpx_cis, p=dp_dOmega / dp_dOmega.sum())
+            hpx = rng.choice(hpx_cis, p=dp_dOmega / dp_dOmega.sum())
 
             # Convert hpx to ra, dec
-            dx, dy = rng_np.uniform(0, 1, size=2)
+            dx, dy = rng.uniform(0, 1, size=2)
             ra, dec = self._pix2radec(hpx, dx=dx, dy=dy)
 
             # Randomly select redshift
-            z = rng_np.choice(z_grid, p=self.dp_dz_grid(z_grid, hpx=hpx))
+            dp_dz = self.dp_dz(z_grid, hpx=hpx)
+            z = rng.choice(z_grid, p=dp_dz / dp_dz.sum())
 
         return [ra, dec, z]
