@@ -278,6 +278,34 @@ class Skymap:
 
         return dp_dOmega
 
+    def hpx_prob(self, hpx=None):
+        """Returns probabilty contained in the given HEALPixs.
+
+        Parameters
+        ----------
+        hpx : _type_
+            _description_
+
+        Returns
+        -------
+        _type_
+            _description_
+        """
+        # Get indices; get all indices if None
+        if hpx is None:
+            ind_hpx = np.arange(len(self.skymap))
+        else:
+            ind_hpx = self.get_hpx_inds(hpx)
+
+        # Fetch HEALPix indices probability
+        if self.moc:
+            hpx_areas = lsm_moc.uniq2pixarea(self.skymap[ind_hpx]["UNIQ"].value)
+            hpx_prob = self.skymap[ind_hpx]["PROBDENSITY"].value * hpx_areas
+        else:
+            hpx_prob = self.skymap[ind_hpx]["PROB"].value
+
+        return hpx_prob
+
     def ddL_dz_jacobian(self, z, cosmo=None):
         """Jacobian of luminosity distance with respect to redshift.
 
@@ -372,6 +400,16 @@ class Skymap:
                 "WARNING: Distance ansatz failed as described in S2 of the 'Going the Distance' supplement paper",
                 f"(DISTMU={skymap_temp['DISTMU'].value}, DISTSIGMA={skymap_temp['DISTSIGMA'].value}, DISTNORM={skymap_temp['DISTNORM'].value})",
                 "returning value for the most probable hpx.",
+            )
+            if self.moc:
+                probkey = "PROBDENSITY"
+            else:
+                probkey = "PROB"
+            skymap_temp = self.skymap[[np.argmax(self.skymap[probkey])]]
+        # If only DISTMU is infinite, return dL^2 distribution
+        elif not np.isfinite(skymap_temp["DISTMU"]):
+            print(
+                "WARNING: DISTMU is infinite; returning distribution for most probable hpx",
             )
             if self.moc:
                 probkey = "PROBDENSITY"
@@ -478,6 +516,7 @@ class Skymap:
                 "WARNING: dp_dz_grid probabilities summed to 0; returning uniform probabilites",
             )
             dp_dz_grid = np.ones_like(dp_dz_grid)
+            total_prob_grid = np.trapz(dp_dz_grid, z_grid)
             dp_dz_evaluate = np.ones_like(dp_dz_evaluate)
         dp_dz_evaluate /= total_prob_grid
 
@@ -546,8 +585,8 @@ class Skymap:
             hpx_cis = self.get_hpxs_for_ci_areas(ci_area)[0]
 
             # Randomly select hpx
-            dp_dOmega = self.dp_dOmega(hpx=hpx_cis)
-            hpx = rng.choice(hpx_cis, p=dp_dOmega / dp_dOmega.sum())
+            hpx_prob = self.hpx_prob(hpx=hpx_cis)
+            hpx = rng.choice(hpx_cis, p=hpx_prob / hpx_prob.sum())
 
             # Convert hpx to ra, dec
             dx, dy = rng.uniform(0, 1, size=2)
